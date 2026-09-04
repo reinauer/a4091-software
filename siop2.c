@@ -484,7 +484,7 @@ siopng_scsipi_request(struct scsipi_channel *chan, scsipi_adapter_req_t req,
 		memcpy(&acb->cmd, xs->cmd, xs->cmdlen);
 		acb->clen = xs->cmdlen;
 		acb->daddr = xs->data;
-		acb->dleft = xs->datalen;
+		acb->dleft = -1;  /* No partial-transfer residual recorded yet. */
 
 		s = bsd_splbio();
 		TAILQ_INSERT_TAIL(&sc->ready_list, acb, chain);
@@ -630,6 +630,87 @@ siopng_sched(struct siop_softc *sc)
 	siopng_select(sc);
 }
 
+static int
+siopng_chain_resid(struct siop_acb *acb, int index, u_long resid)
+{
+	u_long limit = acb->xs->datalen;
+	int i;
+
+	if (resid >= limit)
+		return limit;
+
+	for (i = index + 1; i < DMAMAXIO; ++i) {
+		u_long len = acb->ds.chain[i].datalen;
+
+		if (len == 0)
+			break;
+		if (len > limit - resid)
+			return limit;
+		resid += len;
+	}
+	return resid;
+}
+
+static int
+siopng_partial_resid(struct siop_acb *acb)
+{
+	u_long current = acb->iob_curbuf;
+	int i;
+
+	for (i = 0; i < DMAMAXIO; ++i) {
+		u_long addr = (u_long)acb->ds.chain[i].databuf;
+		u_long len = acb->ds.chain[i].datalen;
+
+		if (len == 0)
+			break;
+		if (current >= addr && current - addr < len)
+			return siopng_chain_resid(acb, i,
+			    acb->iob_curlen);
+	}
+
+	/* Do not claim data was transferred if the DMA position is invalid. */
+	return acb->xs->datalen;
+}
+
+static int
+siopng_resid(struct siop_softc *sc, struct siop_acb *acb)
+{
+	siop_regmap_p rp = sc->sc_siopp;
+	u_long base;
+	u_long offset;
+	int index;
+
+	if (acb->dleft >= 0)
+		return acb->dleft;
+	if (acb->iob_len == 0)
+		return 0;
+
+	/* TEMP is zero when the target skipped the data phase entirely. */
+	if (rp->siop_temp == 0)
+		return acb->xs->datalen;
+
+	if (acb->xs->xs_control & XS_CTL_DATA_IN)
+		base = Ent_datain;
+	else if (acb->xs->xs_control & XS_CTL_DATA_OUT)
+		base = Ent_dataout;
+	else
+		return 0;
+
+	if (rp->siop_temp < sc->sc_scriptspa)
+		return acb->xs->datalen;
+	offset = rp->siop_temp - sc->sc_scriptspa;
+	/* TEMP follows the last MOVE/CALL pair, which occupies 16 bytes. */
+	if (offset < base || offset > base + Ent_datain - Ent_dataout ||
+	    ((offset - base) & 15) != 0)
+		return acb->xs->datalen;
+
+	index = (offset - base) / 16;
+	if (index >= DMAMAXIO || acb->ds.chain[index].datalen == 0)
+		return 0;
+	return siopng_chain_resid(acb, index,
+	    acb->ds.chain[index].datalen);
+}
+
 void
 siopng_scsidone(struct siop_acb *acb, int stat)
 {
@@ -654,7 +735,7 @@ siopng_scsidone(struct siop_acb *acb, int stat)
 	sc = device_private(periph->periph_channel->chan_adapter->adapt_dev);
 
 	xs->status = stat;
-	xs->resid = 0;		/* XXXX */
+	xs->resid = siopng_resid(sc, acb);
 
 	if (xs->error == XS_NOERROR) {
 		if (stat == SCSI_CHECK || stat == SCSI_BUSY)
@@ -1530,6 +1611,8 @@ siopng_checkintr(struct siop_softc *sc, u_char istat, u_char dstat,
 			acb->iob_curlen += adjust;
 			acb->iob_curbuf = 
 			    *((long *)__UNVOLATILE(&rp->siop_dnad)) - adjust;
+			if ((rp->siop_sbcl & 7) == 2)
+				acb->dleft = siopng_partial_resid(acb);
 #ifdef DEBUG
 			if (siopng_debug & 0x100) {
 				int i;
