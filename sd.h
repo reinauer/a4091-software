@@ -23,7 +23,7 @@ uint32_t get_scripts_mainboard_addr(const void *scripts, uint32_t size,
 #endif
 void free_scripts_copy(void);
 
-int sd_readwrite(void *periph, uint64_t blkno, uint b_flags,
+int sd_readwrite(void *periph, uint64_t blkno, uint blkshift, uint b_flags,
                  void *buf, uint buflen, void *ior);
 int sd_seek(void *periph_p, uint64_t blkno, void *ior);
 int sd_scsidirect(void *periph, void *cmd_p, void *ior);

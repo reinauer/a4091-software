@@ -344,6 +344,7 @@ struct scsipi_channel {
 	struct Task *chan_task;
 	uint32_t chan_sig_mask;
 	uint64_t chan_current_blkno;
+	uint32_t chan_current_blkshift;
 #endif
 #ifndef PORT_AMIGA
 	/* callback we may have to call from completion thread */
@@ -630,6 +631,7 @@ struct scsipi_xfer {
 
         void    *xs_callback_arg;       /* AmigaOS callback data */
         void    *amiga_ior;             /* AmigaOS IO request for transfer */
+	uint32_t xs_blkshift;		/* block shift used by this transfer */
 	int	xs_control;		/* control flags */
 	volatile int xs_status;		/* status flags */
 	struct scsipi_periph *xs_periph;/* peripheral doing the xfer */

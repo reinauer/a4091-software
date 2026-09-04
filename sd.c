@@ -545,13 +545,12 @@ sd_testunitready_walk(struct scsipi_channel *chan)
  * device to computer RAM.
  */
 int
-sd_readwrite(void *periph_p, uint64_t blkno, uint b_flags, void *buf,
-             uint buflen, void *ior)
+sd_readwrite(void *periph_p, uint64_t blkno, uint blkshift, uint b_flags,
+             void *buf, uint buflen, void *ior)
 {
     struct scsipi_periph *periph = periph_p;
     struct scsipi_generic cmdbuf;
     struct scsipi_xfer *xs;
-    uint32_t blkshift = periph->periph_blkshift;
     uint32_t nblks = buflen >> blkshift;
     int cmdlen;
     int flags;
@@ -614,6 +613,7 @@ sd_readwrite(void *periph_p, uint64_t blkno, uint b_flags, void *buf,
 
     xs->amiga_ior = ior;
     xs->xs_done_callback = sd_complete;
+    xs->xs_blkshift = blkshift;
 
     if (__predict_false(is_zorro_ii_address(xs->data, xs->datalen))) {
         struct scsipi_channel *chan = periph->periph_channel;
@@ -631,6 +631,7 @@ sd_readwrite(void *periph_p, uint64_t blkno, uint b_flags, void *buf,
         if (((struct IOExtTD *)ior)->iotd_Req.io_Actual == 0) {
             /* New transfer - save the starting block */
             chan->chan_current_blkno = blkno;
+            chan->chan_current_blkshift = blkshift;
         }
         /* else: continuation - chan_current_blkno already set and updated */
 
@@ -1293,7 +1294,10 @@ sd_complete(struct scsipi_xfer *xs)
     if (rc == 0) {
         /* Update actual bytes transferred */
         iotd->iotd_Req.io_Actual += xs->datalen;
-        chan->chan_current_blkno += (xs->datalen >> xs->xs_periph->periph_blkshift);
+        if (freed_bounce) {
+            chan->chan_current_blkno +=
+                    (xs->datalen >> xs->xs_blkshift);
+        }
 
         if (iotd->iotd_Req.io_Actual < iotd->iotd_Req.io_Length) {
             /* Split transfer: we have more to do.

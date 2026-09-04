@@ -285,6 +285,21 @@ static const UWORD nsd_supported_cmds[] = {
 };
 
 static int
+get_block_shift(struct scsipi_periph *periph, uint *blkshift)
+{
+    /*
+     * A media transition invalidates periph_blkshift. If every probe
+     * fails, zero still means unknown rather than a one-byte block.
+     */
+    (void) sd_blocksize(periph);
+    if (periph->periph_blkshift == 0)
+        return (ERROR_NOT_READY);
+
+    *blkshift = periph->periph_blkshift;
+    return (0);
+}
+
+static int
 cmd_do_iorequest(struct IORequest * ior)
 {
     int             rc;
@@ -333,16 +348,17 @@ validate_etd:
                     iotd->iotd_Req.io_Offset, iotd->iotd_Req.io_Length);
             if (iotd->iotd_Req.io_Length == 0)
                 goto io_done;
-            /* Ensure periph_blkshift reflects the current medium (it is
-             * reset to 0 on every load/unload transition) before trusting
-             * it for offset/length conversion. */
-            (void) sd_blocksize((struct scsipi_periph *) ior->io_Unit);
-            blkshift = ((struct scsipi_periph *) ior->io_Unit)->periph_blkshift;
+            rc = get_block_shift((struct scsipi_periph *) ior->io_Unit,
+                                 &blkshift);
+            if (rc != 0) {
+                iotd->iotd_Req.io_Error = rc;
+                goto io_done;
+            }
             blkno = iotd->iotd_Req.io_Offset >> blkshift;
             iotd->iotd_Req.io_Actual = 0;
 CMD_READ_continue:
-            rc = sd_readwrite(iotd->iotd_Req.io_Unit, blkno, B_READ,
-                              iotd->iotd_Req.io_Data,
+            rc = sd_readwrite(iotd->iotd_Req.io_Unit, blkno, blkshift,
+                              B_READ, iotd->iotd_Req.io_Data,
                               iotd->iotd_Req.io_Length, ior);
             if (rc == IOERR_UNITBUSY) {
                 /* Resource exhausted (bounce buffer), queue it */
@@ -367,12 +383,17 @@ io_done:
                     iotd->iotd_Req.io_Offset, iotd->iotd_Req.io_Length);
             if (iotd->iotd_Req.io_Length == 0)
                 goto io_done;
-            blkshift = ((struct scsipi_periph *) ior->io_Unit)->periph_blkshift;
+            rc = get_block_shift((struct scsipi_periph *) ior->io_Unit,
+                                 &blkshift);
+            if (rc != 0) {
+                iotd->iotd_Req.io_Error = rc;
+                goto io_done;
+            }
             blkno = iotd->iotd_Req.io_Offset >> blkshift;
             iotd->iotd_Req.io_Actual = 0;
 CMD_WRITE_continue:
-            rc = sd_readwrite(iotd->iotd_Req.io_Unit, blkno, B_WRITE,
-                              iotd->iotd_Req.io_Data,
+            rc = sd_readwrite(iotd->iotd_Req.io_Unit, blkno, blkshift,
+                              B_WRITE, iotd->iotd_Req.io_Data,
                               iotd->iotd_Req.io_Length, ior);
             if (rc == IOERR_UNITBUSY) {
                 /* Resource exhausted (bounce buffer), queue it */
@@ -418,7 +439,12 @@ CMD_WRITE_continue:
                    iotd->iotd_Req.io_Length);
             if (iotd->iotd_Req.io_Length == 0)
                 goto io_done;
-            blkshift = ((struct scsipi_periph *) ior->io_Unit)->periph_blkshift;
+            rc = get_block_shift((struct scsipi_periph *) ior->io_Unit,
+                                 &blkshift);
+            if (rc != 0) {
+                iotd->iotd_Req.io_Error = rc;
+                goto io_done;
+            }
             // 1. Calculate the high 32-bit part of the final blkno
             //    (blkno >> 32)
             // Since 'iotd->iotd_Req.io_Actual' is the high word of the 64-bit
@@ -452,7 +478,12 @@ CMD_WRITE_continue:
                    iotd->iotd_Req.io_Length);
             if (iotd->iotd_Req.io_Length == 0)
                 goto io_done;
-            blkshift = ((struct scsipi_periph *) ior->io_Unit)->periph_blkshift;
+            rc = get_block_shift((struct scsipi_periph *) ior->io_Unit,
+                                 &blkshift);
+            if (rc != 0) {
+                iotd->iotd_Req.io_Error = rc;
+                goto io_done;
+            }
 
             blkno_high = iotd->iotd_Req.io_Actual >> blkshift;
             blkno_low = iotd->iotd_Req.io_Actual << (32 - blkshift);
@@ -464,7 +495,12 @@ CMD_WRITE_continue:
 #ifdef ENABLE_SEEK
         case NSCMD_TD_SEEK64:
         case TD_SEEK64:
-            blkshift = ((struct scsipi_periph *) ior->io_Unit)->periph_blkshift;
+            rc = get_block_shift((struct scsipi_periph *) ior->io_Unit,
+                                 &blkshift);
+            if (rc != 0) {
+                iotd->iotd_Req.io_Error = rc;
+                goto io_done;
+            }
 
             blkno_high = iotd->iotd_Req.io_Actual >> blkshift;
             blkno_low = iotd->iotd_Req.io_Actual << (32 - blkshift);
@@ -477,7 +513,12 @@ CMD_WRITE_continue:
                     ((struct scsipi_periph *) ior->io_Unit)->periph_lun * 10 +
                     ((struct scsipi_periph *) ior->io_Unit)->periph_target,
                     iotd->iotd_Req.io_Offset);
-            blkshift = ((struct scsipi_periph *) ior->io_Unit)->periph_blkshift;
+            rc = get_block_shift((struct scsipi_periph *) ior->io_Unit,
+                                 &blkshift);
+            if (rc != 0) {
+                iotd->iotd_Req.io_Error = rc;
+                goto io_done;
+            }
             blkno = iotd->iotd_Req.io_Offset >> blkshift;
 CMD_SEEK_continue:
             rc = sd_seek(iotd->iotd_Req.io_Unit, blkno, ior);
@@ -854,7 +895,8 @@ fail_msgport:
                 int rc;
 
                 chan->chan_continue_iotd = NULL;
-                rc = sd_readwrite(periph, blkno, flags, buf, len, iotd);
+                rc = sd_readwrite(periph, blkno, chan->chan_current_blkshift,
+                                  flags, buf, len, iotd);
                 if (rc == IOERR_UNITBUSY) {
                     /* Bounce buffer is busy (shouldn't happen for continuations,
                      * but handle it anyway). Re-queue to stalled queue.
